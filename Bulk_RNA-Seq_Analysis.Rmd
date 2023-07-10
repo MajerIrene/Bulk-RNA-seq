@@ -1,0 +1,604 @@
+---
+title: "Bulk RNA Seq Analysis"
+author: "Irene Majer"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+In this project i will perform the bulk analysis in 3 different tissue, brain, liver and lung, to extract differentially expressed genes. I will perform this analysis without excluding rRNA, mRNA, pseudogenes and non canonical chromosomes. The aim of this work is to understand if the methods seen during lesson are robust enough to be reliable in presence of additional sources of variation. I also want to prove that this workflow is able to find meaningful differentially expressed genes between the three samples
+
+### Library used in the analysis
+
+```{r include=FALSE, results="hide"}
+library(recount3)
+library(recount)
+library(edgeR)
+library(ggplot2)
+library(ggpubr)
+library(dplyr)
+library(openxlsx)
+library(viridisLite)
+library(tidyverse)
+library(forcats)
+library(rstatix)
+library(openxlsx)
+```
+
+## Loading the data
+
+The tissue assigned to me are the following: brain, liver and lung. The first step is to load the corresponding dataset:
+
+```{r}
+rse_brain <- readRDS("rse_brain.RDS")
+rse_liver <- readRDS("rse_liver.RDS")
+rse_lung <- readRDS("rse_lung.RDS")
+```
+
+Then i need to take the transformed values for count because they are stored as overall read coverage over exons:
+
+```{r}
+assays(rse_brain)$counts <- transform_counts(rse_brain)
+assays(rse_liver)$counts <- transform_counts(rse_liver)
+assays(rse_lung)$counts <- transform_counts(rse_lung)
+```
+
+### Quality check
+
+Each replicate need to be checked for some quality parameter, before performing any type of analysis:
+
+-   RIN \> 6
+
+-   \% of mapped reads \> 85%
+
+-   \% of rRNA reads → never higher then 10%
+
+I checked each parameters for each replicates:
+
+```{r}
+#Brain
+colData(rse_brain)[101,]$'recount_qc.star.uniquely_mapped_reads_%_both' 
+colData(rse_brain)[101,]$gtex.smrin 
+colData(rse_brain)[101,]$gtex.smrrnart
+#Liver
+colData(rse_liver)[103,]$'recount_qc.star.uniquely_mapped_reads_%_both' 
+colData(rse_liver)[103,]$gtex.smrin
+colData(rse_liver)[103,]$gtex.smrrnart
+#Lung
+colData(rse_lung)[104,]$'recount_qc.star.uniquely_mapped_reads_%_both' 
+colData(rse_lung)[104,]$gtex.smrin 
+colData(rse_lung)[104,]$gtex.smrrnart
+```
+
+If one replicates wasn't good, i checked the next one. For example:
+
+```{r}
+colData(rse_lung)[100,]$'recount_qc.star.uniquely_mapped_reads_%_both' 
+colData(rse_lung)[100,]$gtex.smrin
+colData(rse_lung)[100,]$gtex.smrrnart
+colData(rse_liver)[101,]$'recount_qc.star.uniquely_mapped_reads_%_both' 
+colData(rse_liver)[101,]$gtex.smrin
+colData(rse_liver)[101,]$gtex.smrrnart
+```
+
+Now I create new RSE object with the sample that have passed the quality check;
+
+```{r}
+rse_brain_selected <- rse_brain[,c(98,99,100)]
+rse_liver_selected <- rse_liver[,c(98,100,101)]
+rse_lung_selected <- rse_lung[,c(98,101,102)]
+```
+
+## Count table
+
+Now is necessary to extract the count data from each tissue:
+
+-   Assay is an object that contains the data about gene expression for a sample or tissue
+
+-   Counts → contains an analysis of the count data and that the "counts" object contains the actual count data for the genes in individual cells or samples.
+
+I filter the RSEs in this way:
+
+```{r}
+counts_brain_selected <- assays(rse_brain_selected)$counts
+counts_liver_selected <- assays(rse_liver_selected)$counts
+counts_lung_selected <- assays(rse_lung_selected)$counts
+```
+
+Now it is possible to create a count table containing each sample, using "DGEList":
+
+```{r}
+final_count_table <- cbind(counts_brain_selected, counts_liver_selected, counts_lung_selected)
+colnames(final_count_table) <- c("Brain98", "Brain99", "Brain100", "Liver98", "Liver100", "Liver101", "Lung98", "Lung101", "Lung102")
+rownames(final_count_table) <- rowData(rse_brain_selected)$gene_name
+size <- colSums(final_count_table)
+y <- DGEList(counts=final_count_table)
+group <- as.factor(c("Brain", "Brain", "Brain", "Liver", "Liver", "Liver", "Lung", "Lung", "Lung"))
+y$samples$group <- group
+```
+
+I also add other important quality information:
+
+```{r}
+y$samples$rin <- as.factor(c(colData(rse_brain_selected)$gtex.smrin,colData(rse_liver_selected)$gtex.smrin, colData(rse_lung_selected)$gtex.smrin))
+
+y$samples$slice <- as.factor(c(colData(rse_brain_selected)$gtex.smtsd,colData(rse_liver_selected)$gtex.smtsd,colData(rse_lung_selected)$gtex.smtsd))
+
+y$samples$sex <- as.factor(c(colData(rse_brain_selected)$gtex.sex, colData(rse_liver_selected)$gtex.sex, colData(rse_lung_selected)$gtex.sex))
+
+y$samples$age <- as.factor(c(colData(rse_brain_selected)$gtex.age, colData(rse_liver_selected)$gtex.age, colData(rse_lung_selected)$gtex.age))
+
+y$samples$rRNA <- as.factor(c(colData(rse_brain_selected)$gtex.smrrnart,colData(rse_liver_selected)$gtex.smrrnart, colData(rse_lung_selected)$gtex.smrrnart))
+
+y$samples$mapped <- as.factor(c(colData(rse_brain_selected)$"recount_qc.star.uniquely_mapped_reads_%_both",colData(rse_liver_selected)$"recount_qc.star.uniquely_mapped_reads_%_both", colData(rse_lung_selected)$"recount_qc.star.uniquely_mapped_reads_%_both"))
+
+y$samples$chrm <- as.factor(c(colData(rse_brain_selected)$"recount_qc.aligned_reads%.chrm", colData(rse_liver_selected)$"recount_qc.aligned_reads%.chrm", colData(rse_lung_selected)$"recount_qc.aligned_reads%.chrm"))
+```
+
+Now I can check the final count table:
+
+```{r}
+y
+```
+
+## Removing low expressed genes
+
+> Genes that have very low counts across all the libraries should be removed prior to downstream analysis. This is justified on both biological and statistical grounds. From biological point of view, a gene must be expressed at some minimal level before it is likely to be translated into a protein or to be considered biologically important. From a statistical point of view, genes with consistently low counts are very unlikely be assessed as significantly DE because low counts do not provide enough statistical evidence for a reliable judgement to be made. Such genes can therefore be removed from the analysis without any loss of information. - **From reads to genes to pathways: differential expression analysis of RNA-Seq experiments using Rsubread and the edgeR quasi-likelihood pipeline.** Yunshun Chen,^1,2^ Aaron T. L. Lun,^3^ and Gordon K. Smyth^a,1,4^
+
+First, I look at the number of low expressed genes. Then keep.exprs function removes all genes with low or equal to 0 expression:
+
+```{r}
+table(rowSums(y$counts==0)==9)
+keep.exprs <- filterByExpr(y, group=group)
+y <- y[keep.exprs, keep.lib.sizes=FALSE]
+```
+
+## LogCPM
+
+LogCPM is calculated dividing the number of reads of a gene for the total of the reads in the sample, then multiply for a million and then apply a log2 transformation. This normalize the data about expression based on the dimension of the sample, allowing for a more accurate comparison between samples of different sizes.
+
+```{r}
+logcpm_before <- cpm(y, log=TRUE)
+```
+
+Creating a boxplot of the LogCPM
+
+```{r}
+brain <- c('Brain98', 'Brain99', 'Brain100')
+liver <- c('Liver98', 'Liver100', 'Liver101')
+lung <- c('Lung98', 'Lung101', 'Lung102')
+myColors <- ifelse(colnames(logcpm_before) %in% brain , '#99CCFF'           , ifelse(colnames(logcpm_before) %in% liver, '#0099FF'           ,'#003399' ) )
+boxplot(logcpm_before,notch=T,xlab='Replicates',ylab='LogCPM', main='LogCPM before TMM normalization',col=myColors, varwidth=T)
+```
+
+Check values of the median:
+
+```{r}
+for (i in 1:9){
+  print(median(logcpm_before[,i]))
+}
+```
+
+## Normalization via TMM
+
+> TMM normalization is a simple and effective method for estimating relative RNA production levels from RNA-seq data. The TMM method estimates scale factors between samples that can be incorporated into currently used statistical methods for DE analysis. - **A scaling normalization method for differential expression analysis of RNA-seq data.** Mark D Robinson & Alicia Oshlack 
+
+The next step is to apply the TMM via `calcNormFactors` function in `edgeR`.
+
+```{r}
+y <- calcNormFactors(y, method = "TMM")
+logcpm_after <- cpm(y, log=TRUE)
+```
+
+Now I can visualize and compare the resulting boxplot after the TMM normalization:
+
+```{r}
+#Same as before
+boxplot(logcpm_after,notch=T,xlab='Replicates',ylab='LogCPM', main='LogCPM after TMM normalization',col=myColors, varwidth=T)
+```
+
+Check new value for median
+
+```{r}
+for (i in 1:9){
+  print(median(logcpm_after[,i]))
+}
+```
+
+## Multidimensional scaling plot
+
+The first step is to design the linear model. From a logical point of view the intercept is not needed here:
+
+```{r}
+design <- model.matrix(~0+group, data=y$samples)
+colnames(design) <- levels(y$samples$group)
+design
+```
+
+The aim of a MDS plot is to determine the major source of variation in the data. If data are quite good, I expect that the greatest sources of variation in the data are the different three tissue.
+
+```{r}
+logcpm <- cpm(y, log=TRUE)
+plotMDS(logcpm, labels=group, main = 'Multidimensional scaling plot: gene expression profiles - group',)
+```
+
+In the case of brain one sample is little farther from the other two. In this case is better to check other quality information, aiming to understand which may be the source of variability.
+
+```{r}
+plotMDS(logcpm_after, labels=y$samples$rRNA, main = 'Multidimensional scaling plot of distances between gene expression profiles - rRNA% label')
+plotMDS(logcpm_after, labels=y$samples$chrm, main = 'Multidimensional scaling plot of distances between gene expression profiles - chrm% label')
+plotMDS(logcpm_after, labels=y$samples$slice, main = 'Multidimensional scaling plot of distances between gene expression profiles - slice label')
+plotMDS(logcpm_after, labels=y$samples$age, main = 'Multidimensional scaling plot of distances  between gene expression profiles - age label')
+plotMDS(logcpm_after, labels=y$samples$sex, main = 'Multidimensional scaling plot of distances 
+        between gene expression profiles - sex label')
+```
+
+The tissues cluster very well
+
+## Estimating dispersion
+
+> Biological CV (BCV) is the coefficient of variation with which the (unknown) true abundance of the gene varies between replicate RNA samples. BCV is therefore likely to be the dominant source of uncertainty for high-count genes, so reliable estimation of BCV is crucial for realistic assessment of differential expression in RNA-Seq experiments. If the abundance of each gene varies between replicate RNA samples in such a way that the genewise standard deviations are proportional to the genewise means, a commonly occurring property of measurements on physical quantities, then it is reasonable to suppose that BCV is approximately constant across genes. - Differential expression analysis of multifactor RNA-Seq experiments with respect to biological variation. Davis J. McCarthy, Yunshun Chen and Gordon K. Smyth
+
+Single estimates for genes are not reliable, better to use the estimate trend to see if they are close to the trend itself. It corrects the single estimates by shrinking (reduction in the effects of sampling variation) them. The next step is computing BCV → correction is computed examining the trend curve, showing the relationship between mean and variance.
+
+```{r}
+y <- estimateDisp(y, design)
+plotBCV(y)
+```
+
+The "Common" line is little above 0.5, even if the analysis is considering different sample with different donor for age, sex and slice (brain case), and this sort of things that influence the biological variability.
+
+## Linear model
+
+The next step is to fit a quasi-likelihood negative binomial generalized log-linear model to count data. Conduct gene-wise statistical tests for a given coefficient or contrast.
+
+```{r}
+fit <- glmQLFit(y, design)
+fit
+```
+
+The next step is to design the contrasts, we choose what we want to compare, by specifying the corresponding column:
+
+-   Brain vs Liver
+
+-   Brain vs Lung
+
+-   Liver vs Lung
+
+`contrast` is numeric vector or matrix specifying one or more contrasts of the linear model coefficients to be tested equal to zero. The order in the design table is brain - lung
+
+```{r}
+qlfBrainLiver <- glmQLFTest(fit, contrast=c(1,-1,0))
+qlfBrainLung <- glmQLFTest(fit, contrast=c(1,0,-1))
+qlfLiverLung <- glmQLFTest(fit, contrast=c(0,1,-1))
+```
+
+`topTags` extracts the top DE tags in a data frame for a given pair of groups, ranked by p-value or absolute log-fold change:
+
+```{r}
+resultsBrainLiver = topTags(qlfBrainLiver, n = 10000000, adjust.method = "BH", sort.by = "PValue", p.value = 1)
+resultBrainLung= topTags(qlfBrainLung, n = 10000000, adjust.method = "BH", sort.by = "PValue", p.value = 1)
+resultsLiverLung = topTags(qlfLiverLung , n = 10000000, adjust.method = "BH", sort.by = "PValue", p.value = 1)
+```
+
+And also take a look to the numbers of top, down and not signed DE genes in each comparison:
+
+```{r}
+summary(decideTests(qlfBrainLiver, p.value=0.01, lfc=1)) 
+```
+
+```{r}
+summary(decideTests(qlfBrainLung, p.value=0.01, lfc=1)) 
+```
+
+```{r}
+summary(decideTests(qlfLiverLung, p.value=0.01, lfc=1)) 
+```
+
+## Up genes in one condition vs both
+
+Now it's possible to compare the up regulated gene in each tissue with respect to the other two.
+
+To do this I intersect the two table containing the two comparison performed for one tissue vs the other two. I set some criterion to perform the analysis in the correct way:
+
+-   FDR (false discovery rate) \< 0.01 → control the false discovery rate at a low level, allowing only a 1% chance of false positive results
+
+-   logCPM \> 0 → to prioritize genes that have a minimum level of expression across the samples analyzed. Genes with very low expression levels may not provide reliable or meaningful information in the context of the study.
+
+-   LogFC (fold change) \>1 or \<-1 → for selecting differentially expressed genes implies that the genes must exhibit a fold change of at least two times (in linear terms) between the compared conditions. This criterion is often used to identify genes with a substantial expression variation between conditions and to reduce the inclusion of genes with small expression differences. A positive logFC indicates increased expression in the first tissue, while a negative logFC indicates increased expression in the second one
+
+I also delete all the genes that are not useful for my analysis:
+
+-   LOC: since they are those for which the offical gene symbol is not available
+
+-   LINC: Long Intergenic Non-Protein Coding
+
+-   MIR: MicroRNA
+
+-   SNORD: Small nucleolar RNA
+
+-   RPL: corresponding to ribosomal proteins
+
+### Brain
+
+```{r}
+brain_1 <- rownames(resultsBrainLiver$table %>% filter(logFC > 1 & logCPM > 0 & FDR < 0.01))
+brain_2 <- rownames(resultBrainLung$table %>% filter(logFC > 1 & logCPM > 0 & FDR < 0.01))
+brain_total <- intersect(brain_1, brain_2)
+
+table(startsWith(brain_total, "RPL"))
+maskBrain <- startsWith(brain_total, "LOC") | startsWith(brain_total,"MIR") | startsWith(brain_total, "LINC") | startsWith(brain_total, "SNORD")
+brain_total <- brain_total[!maskBrain]
+head(brain_total)
+
+```
+
+### Liver
+
+```{r}
+liver_1 <- rownames(resultsBrainLiver$table %>% filter(logFC < -1 & logCPM > 0 & FDR < 0.01))
+liver_2 <- rownames(resultsLiverLung$table %>% filter(logFC > 1 & logCPM > 0 & FDR < 0.01))
+liver_total <- intersect(liver_1, liver_2)
+
+table(startsWith(liver_total, "RPL"))
+maskBrain <- startsWith(liver_total, "LOC") | startsWith(liver_total,"MIR") | startsWith(liver_total, "LINC") | startsWith(liver_total, "SNORD")
+liver_total <- liver_total[!maskBrain]
+head(liver_total)
+```
+
+### Lung
+
+```{r}
+lung_1 <- rownames(resultBrainLung$table %>% filter(logFC < -1 & logCPM > 0 & FDR < 0.01))
+lung_2 <- rownames(resultsLiverLung$table %>% filter(logFC < -1 & logCPM > 0 & FDR < 0.01))
+lung_total <- intersect(lung_1,lung_2)
+
+table(startsWith(lung_total, "RPL"))
+maskLung <- startsWith(lung_total, "LOC") | startsWith(lung_total,"MIR") | startsWith(lung_total, "LINC") | startsWith(lung_total, "SNORD")
+lung_total <- lung_total[!maskLung]
+head(lung_total)
+```
+
+## Example of a gene over-represented in one tissue
+
+I select one gene differentially expressed in one tissue against the other two and check its transcript in UCSC Browser. In this case i choose NSG1.
+
+This is the screen of alternative transcript:
+
+![](images/Schermata%202023-06-14%20alle%2017.30.07.png)
+
+It is possible to notice some event of alternative splicing:
+
+-   Alternative in the TSS (transcription start site)
+
+-   Alternative TTS (transcription termination site)
+
+-   Cassette exon
+
+```{r}
+which(rowData(rse_brain)$gene_name == "NSG1") #38639
+```
+
+This gene is more expressed in brain with respect to liver and lung where it seems to be not expressed. It is possible to double check this with an appropriate statistical test:
+
+```{r}
+assays(rse_brain)$TPM <- recount::getTPM(rse_brain)
+assays(rse_lung)$TPM <- recount::getTPM(rse_lung)
+assays(rse_liver)$TPM <- recount::getTPM(rse_liver)
+df_b=data.frame(TPM=assays(rse_brain)$TPM[38639,],group="Brain") 
+df_lu=data.frame(TPM=assays(rse_lung)$TPM[38639,],group="Lung") 
+df_li=data.frame(TPM=assays(rse_liver)$TPM[38639,],group="Liver") 
+data_NSG1=rbind(df_b,df_lu,df_li)
+
+#Statistical test 
+res_kruskal <- data_NSG1 %>% kruskal_test(TPM ~ group) 
+res_kruskal
+
+```
+
+A p-value of 0 in the Kruskal-Wallis test indicates an extremely significant difference in gene expression distributions among the three tissues being compared. In practical terms, a p-value of 0 implies that there is no chance whatsoever that the observed differences are due to random chance.
+
+I represent this result with a boxplot:
+
+```{r}
+pwc2=data_NSG1 %>% wilcox_test(TPM ~ group, p.adjust.method = "BH") 
+pwc2 
+
+pwc = pwc2 %>% add_xy_position(x = "group")
+ggboxplot(data_NSG1, x = "group", y = "TPM",outlier.shape = NA,width = 0.5,title="NSG1 expression across tissues", fill = "#0099FF") + 
+stat_pvalue_manual(pwc,y.position = c(400,400,400)) + 
+labs(subtitle = get_test_label(res_kruskal, detailed = TRUE),caption = get_pwc_label(pwc)) 
+
+```
+
+lll
+
+```{r}
+which(rowData(rse_liver)$gene_name == "SERPINA6") #39648
+which(rowData(rse_brain)$gene_name == "ADH6") #9763
+which(rowData(rse_lung)$gene_name == "ADH6") #9763
+```
+
+```{r}
+df_b=data.frame(TPM=assays(rse_brain)$TPM[19946,],group="Brain") 
+df_lu=data.frame(TPM=assays(rse_lung)$TPM[19946,],group="Lung") 
+df_li=data.frame(TPM=assays(rse_liver)$TPM[19946,],group="Liver") 
+data_PON1=rbind(df_b,df_lu,df_li)
+
+#Statistical test 
+res_kruskal <- data_PON1 %>% kruskal_test(TPM ~ group) 
+res_kruskal
+```
+
+```{r}
+pwc2=data_PON1 %>% wilcox_test(TPM ~ group, p.adjust.method = "BH") 
+pwc2 
+
+pwc = pwc2 %>% add_xy_position(x = "group")
+ggboxplot(data_PON1, x = "group", y = "TPM",outlier.shape = NA,width = 0.5,title="SERPINA6 expression across tissues", fill = "#0099FF") + 
+stat_pvalue_manual(pwc2,y.position = c(400,400,400)) + 
+labs(subtitle = get_test_label(res_kruskal, detailed = TRUE),caption = get_pwc_label(pwc))
+```
+
+## Ontologies enrichment analysis
+
+I split our DE genes between those "up"-regulated and "down"-regulated in our experiment, according to the log-fold change (positive or negative). Then I compare their overlap with all the GO terms, and evaluate the enrichment of each GO term with the corresponding (corrected) p-value.
+
+The first step is to load the package and set Enrichr as as my target for the enrichment analysis
+
+```{r, results="hide"}
+library('enrichR')
+setEnrichrSite("Enrichr")
+websiteLive <- TRUE
+```
+
+Then i can start considering the up regulated genes
+
+### Up regulated genes in brain
+
+```{r}
+dbs_ontologies <- c("GO_Biological_Process_2023", "GO_Molecular_Function_2023", "GO_Cellular_Component_2023")
+if (websiteLive) {
+    enriched_ontologies <- enrichr(brain_total, dbs_ontologies)
+}
+if (websiteLive) plotEnrich(title = "Enriched terms of GO Biological Process 2023 database", enriched_ontologies[[1]], showTerms = 5, numChar = 40, y = "Count", orderBy = "P.value")
+
+
+if (websiteLive) plotEnrich(title = "Enriched terms of GO Molecular Function 2023 database", enriched_ontologies[[2]], showTerms = 5, numChar = 40, y = "Count", orderBy = "P.value")
+
+
+if (websiteLive) plotEnrich(title = "Enriched terms of GO Cellular Component 2023 database", enriched_ontologies[[3]], showTerms = 5, numChar = 40, y = "Count", orderBy = "P.value")
+```
+
+### Up regulated genes in liver
+
+```{r}
+if (websiteLive) {
+    enriched_ontologies <- enrichr(liver_total, dbs_ontologies)
+}
+if (websiteLive) plotEnrich(title = "Enriched terms of GO Biological Process 2023 database", enriched_ontologies[[1]], showTerms = 5, numChar = 40, y = "Count", orderBy = "P.value")
+
+
+if (websiteLive) plotEnrich(title = "Enriched terms of GO Molecular Function 2023 database", enriched_ontologies[[2]], showTerms = 5, numChar = 50, y = "Count", orderBy = "P.value")
+
+
+if (websiteLive) plotEnrich(title = "Enriched terms of GO Cellular Component 2023 database", enriched_ontologies[[3]], showTerms = 5, numChar = 100, y = "Count", orderBy = "P.value")
+
+```
+
+### Up regulated genes in lung
+
+```{r}
+if (websiteLive) {
+    enriched_ontologies <- enrichr(lung_total, dbs_ontologies)
+}
+if (websiteLive) plotEnrich(title = "Enriched terms of GO Biological Process 2023 database", enriched_ontologies[[1]], showTerms = 5, numChar = 100, y = "Count", orderBy = "P.value")
+
+
+if (websiteLive) plotEnrich(title = "Enriched terms of GO Molecular Function 2023 database", enriched_ontologies[[2]], showTerms = 5, numChar = 100, y = "Count", orderBy = "P.value")
+
+
+if (websiteLive) plotEnrich(title = "Enriched terms of GO Cellular Component 2023 database", enriched_ontologies[[3]], showTerms = 5, numChar = 100, y = "Count", orderBy = "P.value")
+```
+
+The result for brain are quite clear, while for liver and lung is still not possible to identify the original tissue just looking to the GO term. So i decide to perform additional analysis
+
+## Pathway enrichment analysis
+
+### Brain
+
+```{r}
+available_databases <- listEnrichrDbs()
+print(available_databases)
+```
+
+```{r}
+dbs_pathway <- c("BioPlanet_2019", "WikiPathway_2021_Human", "KEGG_2021_Human")
+if (websiteLive) {
+    enriched_pathway_brain <- enrichr(brain_total, dbs_pathway)
+}
+```
+
+```{r}
+if (websiteLive) plotEnrich(title = "Enriched terms of BioPlanet 2019 database", enriched_pathway_brain[[1]], showTerms = 5, numChar = 100, y = "Count", orderBy = "P.value")
+
+
+if (websiteLive) plotEnrich(title = "Enriched terms of WikiPathway 2021 Human database", enriched_pathway_brain[[2]], showTerms = 5, numChar = 100, y = "Count", orderBy = "P.value")
+
+
+if (websiteLive) plotEnrich(title = "Enriched terms of KEGG 2021 Human database", enriched_pathway_brain[[3]], showTerms = 5, numChar = 100, y = "Count", orderBy = "P.value")
+
+
+
+```
+
+### Liver
+
+```{r}
+if (websiteLive) {
+    enriched_pathway_liver <- enrichr(liver_total, dbs_pathway)
+}
+if (websiteLive) plotEnrich(title = "Enriched terms of BioPlanet 2023 database", enriched_pathway_liver[[1]], showTerms = 5, numChar = 40, y = "Count", orderBy = "P.value")
+
+
+if (websiteLive) plotEnrich(title = "Enriched terms of WikiPathway 2023 Human database", enriched_pathway_liver[[2]], showTerms = 5, numChar = 100, y = "Count", orderBy = "P.value")
+
+
+if (websiteLive) plotEnrich(title = "Enriched terms of KEGG 2023 Human database", enriched_pathway_liver[[3]], showTerms = 5, numChar = 100, y = "Count", orderBy = "P.value")
+
+```
+
+### Lung
+
+```{r}
+if (websiteLive) {
+    enriched_pathway_lung <- enrichr(lung_total, dbs_pathway)
+}
+if (websiteLive) plotEnrich(title = "Enriched terms of BioPlanet 2023 database", enriched_pathway_lung[[1]], showTerms = 5, numChar = 100, y = "Count", orderBy = "P.value")
+
+
+if (websiteLive) plotEnrich(title = "Enriched terms of WikiPathway 2023 Human database", enriched_pathway_lung[[2]], showTerms = 5, numChar = 100, y = "Count", orderBy = "P.value")
+
+
+if (websiteLive) plotEnrich(title = "Enriched terms of KEGG 2023 Human database", enriched_pathway_lung[[3]], showTerms = 5, numChar = 100, y = "Count", orderBy = "P.value")
+```
+
+### Further analysis with Human Gene Atlas
+
+```{r}
+dbs_celltypes <- c("Human_Gene_Atlas")
+if (websiteLive) {
+    enriched_celltypes_brain <- enrichr(brain_total, dbs_celltypes)
+}
+if (websiteLive) plotEnrich(title = "Brain - Human Gene Atlas database", enriched_celltypes_brain[[1]], showTerms = 5, numChar = 40, y = "Count", orderBy = "P.value")
+
+```
+
+```{r}
+dbs_celltypes <- c("Human_Gene_Atlas")
+if (websiteLive) {
+    enriched_celltypes_liver <- enrichr(liver_total, dbs_celltypes)
+}
+if (websiteLive) plotEnrich(title = "Liver - Human Gene Atlas database", enriched_celltypes_liver[[1]], showTerms = 5, numChar = 40, y = "Count", orderBy = "P.value")
+
+
+```
+
+```{r}
+dbs_celltypes <- c("Human_Gene_Atlas")
+if (websiteLive) {
+    enriched_celltypes_lung <- enrichr(lung_total, dbs_celltypes)
+}
+if (websiteLive) plotEnrich(title = "Lung - Human Gene Atlas database", enriched_celltypes_lung[[1]], showTerms = 5, numChar = 40, y = "Count", orderBy = "P.value")
+
+```
+
+## Conclusions
+
+At the end I can conclude that each tissue is correctly identified by the up regulated genes. In addition this methodology is robust enough to identify differentially expressed genes and tissue even in raw data, without deleting pseudogenes, non canonical chromosome, rRNA genes...
