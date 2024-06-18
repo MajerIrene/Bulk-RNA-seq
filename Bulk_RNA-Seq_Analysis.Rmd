@@ -12,7 +12,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ## Introduction
 
-In this project i will perform the bulk analysis in 3 different tissue, brain, liver and lung, to extract differentially expressed genes. I will perform this analysis without excluding rRNA, mRNA, pseudogenes and non canonical chromosomes. The aim of this work is to understand if the methods seen during lesson are robust enough to be reliable in presence of additional sources of variation. I also want to prove that this workflow is able to find meaningful differentially expressed genes between the three samples
+In this project I'm going to perform the bulk analysis in 3 different tissue, brain, liver and lung, to extract differentially expressed genes. The analysis is performed without excluding rRNA, mRNA, pseudogenes and non canonical chromosomes. The aim of this work is to understand if the methods seen during lesson are robust enough to be reliable in presence of additional sources of variation. I also want to prove that this workflow is able to find meaningful differentially expressed genes between the three samples
 
 ### Library used in the analysis
 
